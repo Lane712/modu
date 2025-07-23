@@ -114,14 +114,12 @@ def extract_random_frames(video_file: str, n: int = 1):
 
     cap.release()
 
-def convert_video(file: str, output_format: str, output: str | None = None):
+def convert_video(file: str, output_format: str, output: str | None = None, cover: bool = False):
     """
     转换视频格式
     """
     import subprocess, os
     from pathlib import Path
-
-    preset = "veryfast"
 
     base_dir = Path(__file__).parent.parent
     ffmpeg_path = base_dir / "res" / "ffmpeg" / "bin" / "ffmpeg"
@@ -133,8 +131,9 @@ def convert_video(file: str, output_format: str, output: str | None = None):
 
     if os.path.exists(output):
         print(f"{output} existed")
-        return
+        if not cover:
+            return
 
-    subprocess.run([ffmpeg_path, '-i', file, "-preset", preset ,output], check=True)
+    subprocess.run([ffmpeg_path, '-i', file, "-c copy", output], check=True)
 
     

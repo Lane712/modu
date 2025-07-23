@@ -21,7 +21,7 @@ modu/m3u8/
 
 modu/_temp/
 
-LogOutPut.log
+*.log
 
 *.m3u8
 

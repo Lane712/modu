@@ -19,22 +19,37 @@ class Logger:
 
     def __init__(self, 
             name: str | None = "modu",
+            filename: str = "LogOutput.log",
             mode: _Mode = ALL,
             level: _Level = INFO,
-            file_level: _Level | None = None,
-            stream_level: _Level | None = None,
+            file_level: _Level = DEBUG,
+            stream_level: _Level = INFO,
             formatter: logging.Formatter | None = None,
             file_formatter: logging.Formatter | None = None,
             stream_formatter: logging.Formatter | None = None
         ):
         """
-        name => logging.getLogger(name)
+        ### name
+        > logging.getLogger(name)
 
-        mode => ALL("all"), FILE("file"), CONSOLE("console")
+        ### mode
+        > `ALL("all")`, `FILE("file")`, `CONSOLE("console")`
 
-        level => logging.setLevel(level)
+        ### level
+        > logging.setLevel(level)
+
+        ### file_formatter
+        > *default* ***"[%(asctime)s][%(levelname)s]: %(message)s"***
+
+        > *example* `[2025-01-01 12:34:56,641][INFO]: logoutput`
+
+        ### stream_formatter
+        > *default* ***"%(levelname)s: %(message)s"***
+
+        > *example* `INFO: logoutput`
         """
         self.name = name
+        self.filename = filename
         self.mode = mode
         self.level = level
         self.file_level = file_level
@@ -57,13 +72,13 @@ class Logger:
     def _create_file_logger(self):
 
         self.file_handler = logging.FileHandler(
-            filename="LogOutput.log",
+            filename=self.filename,
             mode="a",
             encoding="utf-8",
             delay=True, # 第一次写入时打开
         )
 
-        self.file_handler.setLevel(self.file_level or self.level)
+        self.file_handler.setLevel(self.file_level)
 
         if self.file_formatter:
             file_formatter = self.file_formatter
@@ -84,7 +99,7 @@ class Logger:
 
         self.stream_handler = logging.StreamHandler()
 
-        self.stream_handler.setLevel(self.stream_level or self.level)
+        self.stream_handler.setLevel(self.stream_level)
 
         if self.stream_formatter:
             stream_formatter = self.stream_formatter

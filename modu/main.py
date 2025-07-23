@@ -1,193 +1,164 @@
 
-from datetime import date
 import requests
-from requests.adapters import HTTPAdapter
-from urllib3 import Retry
 from fake_useragent import UserAgent
+    
+import ddddocr
 
 from bs4 import BeautifulSoup
 from urllib.parse import unquote, urlparse
 
-import shutil,sys
+import shutil
+import time
 import os,re,json,m3u8
 from tqdm import tqdm
 from pathlib import Path
+from datetime import date
 
-import threading
+from queue import Queue
+from threading import Event, Lock, Thread
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from modu.logger import log
+from pymongo import MongoClient
+from pymongo.collection import Collection
+
+from modu.logger import log, Logger
 from modu.utils import modify_m3u8_file
 
 from typing import Literal
 
 class ModuConfig:
-    REDIRECT_URL = 'https://www.moduzy.vip'
-    BASE_URL = 'https://www.moduzy.net'
 
-    DONGMAN = 1
-    ANIME = 2
-    AMOVIE = 5
-    LIFUN = 6
-    TAG = Literal[1, 2, 5, 6]
+    _redirect = 'https://www.moduzy.vip'
+    _root = 'https://www.moduzy.cc'
 
-    DATA_FILRS = ['json', 'm3u8', 'temp']
+    TAG = Literal[1,2,3,4,5,6,7,8,9]
+    # 国产动漫 1
+    # 日韩动漫 2
+    # 欧美动漫 3
+    # 港台动漫 4
+    # 动漫电影 5
+    # 里番 6
+    # 电影 7
+    # 连续剧 8
+    # 综艺 9
+    
+    @classmethod
+    def update_root_url(cls):
+        """Get the latest root url"""
+        res = requests.get(cls._redirect)
+        res.raise_for_status()
+        match = re.search(r'<span> <span>魔都资源：</span> <a href="(https?:.*)" target="_blank" class="home_a">',res.text)
+        url = match.group(1)
+        if url:
+            cls._root = url
+            print("Changed Root:", cls._root)
+        return cls._root
 
     # TODO:
     # 数据文件为json文件夹，1.获取/ 当前目录、软件目录、根目录 2.读取  3.不存在创建，存在就更新
     # 配置文件类似，不存在使用默认配置，或者提示创建
 
+SLog = Logger(name="moduscraper", filename="ScrapeLog.log")
+
 class ModuScraper:
+    _ua = UserAgent(os=["Windows","Android"])
+    _session = requests.Session()
+    _session.headers['User-Agent'] = _ua.random
+    _ocr = None
+    _root = ModuConfig._root
 
-    ua = UserAgent(os=["Windows"])
+    def __init__(
+            self,
+            ua_os: list[str] = ...
+        ):
+        self.ua = UserAgent(os=ua_os if (ua_os is not Ellipsis) else self.__class__._ua.os)
+        self.session = requests.Session()
+        self.session.headers['User-Agent'] = self.ua.random
+        self.ocr = None
+        self.root = self.__class__._root
 
-    @staticmethod
-    def get_root_url():
-        res = requests.get(ModuConfig.REDIRECT_URL)
-        match = re.search(r'<span> <span>魔都资源：</span> <a href="(https?:.*)" target="_blank" class="home_a">',res.text)
-        url = match.group(1)
-        return url
+    def verify_search_cookie(self):
+        """Verify to use search function"""
+        res = self.session.get(self.root)
+        print(res.headers, self.session.cookies.items())
+        r1 = self.session.get(self.root + "/index.php/verify/index.html")
+        r1.raise_for_status()
+        if self.ocr is None:
+            self.ocr = ddddocr.DdddOcr()
+            print("Create ddddcor.DdddOcr's Object")
+        result = self.ocr.classification(r1.content)
+        print("验证码识别结果：", result)
+        r2 = self.session.get(self.root + f"/index.php/ajax/verify_check?type=search&verify={result}")
+        print(r2.text)
+        if r2.json()['msg'] == "ok":
+            return self.session.cookies.items()
+
+    @classmethod
+    def verify_search_cookie(cls):
+        """Verify to use search function"""
+        res = cls._session.get(cls._root)
+        print(res.headers, cls._session.cookies.items())
+        r1 = cls._session.get(cls._root + "/index.php/verify/index.html")
+        r1.raise_for_status()
+        if cls._ocr is None:
+            cls._ocr = ddddocr.DdddOcr()
+        result = cls._ocr.classification(r1.content)
+        print("验证码识别结果：", result)
+        r2 = cls._session.get(cls._root + f"/index.php/ajax/verify_check?type=search&verify={result}")
+        print(r2.text)
+        if r2.json()['msg'] == "ok":
+            return cls._session.cookies.items()
         
-    @staticmethod
-    def fetch(url: str):
-        """
-        return error or res.content
-
-        获取成功时返回请求结果，失败时返回错误内容
-        """
-        retry = Retry(
-            total=3,
-            backoff_factor=1,
-            status_forcelist=[429, 500, 502, 503, 504], # 429 请求频率过高，网络速率限制
-            allowed_methods=["GET"]
-        )
-
-        session = requests.Session()
-        session.headers['User-Agent'] = UserAgent(os=["Windows"]).random
-        session.mount("https://", HTTPAdapter(max_retries=retry))
-
-        error = None
-        try:
-            res = session.get(url)
-            res.raise_for_status()
-        except requests.exceptions.RequestException as e:
-            log.error(f'fetch RequestException {url} | {e} | {res.headers}')
-            error = e
-        except Exception as e:
-            log.error(f'fetch Error {url} | {e}')
-            error = e
-        finally:
-            session.close()
-        
-        return error or res
+    def search(self, kwd: str):
+        """Search by **kwd**. Return **list[** {title, status, updated, url} **]**"""
+        search_url = self.root + f"/search/-------------/?wd={kwd}&submit="
+        res = self.session.get(search_url)
+        res.raise_for_status()
+        if res.headers.get("Set-Cookie"):
+            self.verify_search_cookie()
+            return self.session.cookies.items()
+        return self._get_vod_list(res.text)
     
     @classmethod
-    def update(cls, 
-        tag: ModuConfig.TAG = ModuConfig.DONGMAN,
-        after: str = date.today().isoformat(),
-        workers: int = os.cpu_count() * 4 | 16
-        ):
-
-        base_url = ModuConfig.BASE_URL + f"/list{tag}"
-        res = cls.fetch(base_url)
-        match = re.search(r'<a href="/list[0-9]+-([0-9]+)/" title="尾页">尾页</a>', res.text)
-        lp = int(match.group(1))
-
-        vl = cls.get_vod_list(base_url, after=after)
-        for i in range(2, lp + 1):
-            url = base_url + f"-{i}"
-            vll = cls.get_vod_list(url, after=after)
-            if len(vll) == 0:
-                break
-            else:
-                vl.extend(vll)
-
-        if len(vl) == 0:
-            return 0
-        
-        vld = []
-        with ThreadPoolExecutor(max_workers=workers) as et:
-            fs = []
-            for ld in vl:
-                fs.append(et.submit(cls.get_vod_data, ld['url']))
-            
-            for f in tqdm(as_completed(fs), total=len(fs)):
-                vd = f.result()
-                vld.append(vd)
-
-        vld = sorted(vld, key=lambda vd: date.fromisoformat(vd['update']), reverse=True)
-
-        try:
-            with open(f'data/json/{tag}.json', "r", encoding='utf-8') as f:
-                ovld = json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError) as e:
-            ovld = []
-
-        with open(f'data/json/{tag}.json', "w", encoding='utf-8') as f:
-            print('total', len(ovld))
-            for vd in vld:
-                for ovd in ovld[:]:
-                    if vd['title'] == ovd['title']:
-                        ovld.remove(ovd)
-                        break
-                ovld.append(vd)
-            
-            ovld = sorted(ovld, key=lambda ovd: (date.fromisoformat(ovd['update']), ovd['aired']), reverse=True)
-            print('total', len(ovld), "update", len(vld))
-            json.dump(ovld, f, ensure_ascii=False, indent=2)
-
-        return len(vld)
+    def search(cls, kwd: str):
+        """Search by **kwd**. Return **list[** {title, status, updated, url} **]**"""
+        search_url = cls._root + f"/search/-------------/?wd={kwd}&submit="
+        res = cls._session.get(search_url)
+        res.raise_for_status()
+        if res.headers.get("Set-Cookie"):
+            cls.verify_search_cookie()
+            return cls._session.cookies.items()
+        return cls._get_vod_list(res.text)
 
     @staticmethod
-    def get_vod_list(url: str, today: bool = False, after: str = ...):
-        """ 
-        **return**
-            vod { title, url, status, update }
-        """
-        res = requests.get(url, headers={'User-Agent':UserAgent(os=["Windows","Linux"]).random})
-        soup = BeautifulSoup(res.text, 'html.parser')
-        trs = soup.find("tbody").find_all("tr")
-    
+    def _get_vod_list(html: str):
+        soup = BeautifulSoup(html, "html.parser")
+        tbody = soup.find("tbody")
+        if tbody is None:
+            return []
+        
         vod_list = []
-        today_vod_list = []
-        after_vod_list = []
+        trs = tbody.find_all("tr")
         for tr in trs:
-            td_a = tr.find("td").find("a")
-            title = td_a.string
-            href = ModuConfig.BASE_URL + td_a.get("href")
-            status = tr.find("td").find("small").string
-            update = date.fromisoformat(re.search(r'[0-9]{4}-[0-9]{2}-[0-9]{2}', tr.text).group())
-
-            vod = {
+            td1 = tr.find("td")
+            title = td1.find("a").string
+            url = ModuConfig._root + td1.find("a").get("href")
+            status = td1.find("small").string
+            updated = tr.find_all("td")[2].string
+            vod_list.append({
                 "title": title,
-                "url": href,
                 "status": status,
-                "update": update.isoformat()
-            }
-            vod_list.append(vod)
-            
-            td_red = tr.find("td", attrs={"class":"text-red"})
-            if today:
-                if td_red:
-                    today_vod_list.append(vod)
-                else:
-                    return today_vod_list
-                
-            if after is not Ellipsis:
-                if date.fromisoformat(after) <= update:
-                    after_vod_list.append(vod)
-                else:
-                    return after_vod_list
-                
-            print(title, href, status, update)
-
+                "updated": updated,
+                "url": url
+            })
         return vod_list
-
+    
     @staticmethod
-    def get_vod_data(url: str):
-        res = requests.get(url, headers={"User-Agent": UserAgent().random})
-        soup = BeautifulSoup(res.text, 'html.parser')
-        
+    def _get_vod_data(html: str):
+        """### *Return*
+        > a ***dict*** container **details** about this video.
+        """
+        soup = BeautifulSoup(html, "html.parser")
         img = soup.find("p", attrs={'class': 'thumb'}).find('img',src=True)
         title = img.get('alt')
         imgsrc = img.get('src')
@@ -204,11 +175,11 @@ class ModuScraper:
         actors = []
         aired = ""
         region = ""
-        update = ""
+        updated = ""
         
         for key, val in details.items():
             if key == "又名":
-                titles = val.split(" / ")
+                titles = re.split(r"[\W]+", val, flags=re.U)
             elif key == "导演":
                 directors = val.split(",")
             elif key == "主演":
@@ -223,7 +194,7 @@ class ModuScraper:
             elif key == "地区":
                 region = val
             elif key == "更新时间":
-                update = val
+                updated = val
 
         playlists = []
         lists = soup.find('ul', attrs={'class': 'content__playlist'}).find_all('li')
@@ -231,7 +202,7 @@ class ModuScraper:
             playlist = li.find('a').string
             playlists.append(playlist)
 
-        status = re.search(r'<small class="text-red h5">(.*)</small>', res.text).group(1)
+        status = re.search(r'<small class="text-red h5">(.*)</small>', html).group(1)
 
         return {
             'title': title,
@@ -239,89 +210,343 @@ class ModuScraper:
             'region': region,
             'aired':aired,
             'status': status,
-            "update": update,
+            "updated": updated,
             'genres': genres,
             'directors': directors,
             'actors': actors,
-            'url': url,
             'imgsrc': imgsrc,
             'playlists': playlists
         }
-    
-    @classmethod
-    def update_vods_list_thread(cls):
-        
-        def get_last_page_index(url):
-            res = cls.fetch(url)
-            match = re.search(r'<a href="/list[0-9]+-([0-9]+)/" title="尾页">尾页</a>', res.text)
-            return int(match.group(1))
-        
-        with ThreadPoolExecutor(max_workers=os.cpu_count() * 2 | 4) as ext:
-            base_url = "https://www.moduzy.net/list2"
-            vod_list = cls.get_vod_list(base_url)
-            
-            futures = []
-            last_index = get_last_page_index(base_url)
-            for index in range(2, last_index):
-                url = base_url + f"-{index}"
-                futures.append(ext.submit(cls.get_vod_list, url))
 
-            for future in as_completed(futures):
-                vod_list.extend(future.result())
-            print("last_index", last_index, "total", len(vod_list))
-        
-            with open("data/json/anime_list.json", 'w', encoding='utf-8') as f:
-                json.dump(vod_list, f, ensure_ascii=False, indent=2)
+    def scraper_worker(self, url_queue: Queue, col: Collection):
+        error_urls = []
+        user_agent = self.ua.random
+        while not url_queue.empty():
+            url = url_queue.get()
+            try:
+                res = requests.get(url, timeout=20, headers={"User-Agent": user_agent})
+                res.raise_for_status()
+                data = self._get_vod_data(res.text)
+                data['id'] = re.search(r'\d+', url).group()
+                data['url'] = url
+                col.update_one({"id": data['id']}, {"$set": data}, upsert=True)
+            except Exception as e:
+                print(col.name, url, e)
+                error_urls.append(url)
+        return error_urls
 
-    @classmethod
-    def update_vods_data_thread(cls):
+    def scraper(self, tag_queue: Queue, updated_date: str = "0000-00-00"):
+        try:
+            client = MongoClient("mongodb://localhost:27017")
+            db = client['moduzy']
+            print("mongodb connected")
+        except Exception as e:
+            print(e)
+            return
+        print(updated_date)
+        stop_event = Event()
+        while not tag_queue.empty():
+            stop_event.clear()
+            tag = tag_queue.get()
+            url = self.root + f"/list{tag}"
+            print(f"[Scraper tag: {tag}, url: {url}]")
+            try:
+                res = requests.get(url)
+                res.raise_for_status()
+                mat = re.search(r'<a href="/list[0-9]+-([0-9]+)/" title="尾页">尾页</a>', res.text)
+                end_page = int(mat.group(1))
+            except Exception as e:
+                print(tag, "Get end page error:", e)
+                continue
+            url_queue = Queue()
+            user_agent = self.ua.random   
+            for index in range(1, end_page + 1):
+                if stop_event.is_set():
+                    break
+                page = self.root + f"/list{tag}-{index}"
+                print(tag, "get vod list on page", index)
+                try:
+                    res = requests.get(page, timeout=20, headers={"User-Agent": user_agent})
+                    res.raise_for_status()
+                    vod_list = self._get_vod_list(res.text)
+                except Exception as e:
+                    print(tag, "Get vod list error on page", index, e)
+                    break
+                for vod in vod_list:
+                    updated = date.fromisoformat(vod['updated'])
+                    if updated < date.fromisoformat(updated_date):
+                        stop_event.set()
+                        print(tag, "Before updated_date, stop on page", index, ",vod", vod)
+                        break
+                    url_queue.put(vod['url'])
+            try:
+                col = db[str(tag)]
+                with ThreadPoolExecutor(max_workers=16) as executor:
+                    for _ in range(16):
+                       executor.submit(self.scraper_worker, url_queue, col)
+            except Exception as e:
+                print(tag, "fetch data error:", e)
+                continue
 
-        with open("data/json/guoman_list.json", encoding='utf-8') as f:
-            vod_list = json.load(f)
-        
-        with ThreadPoolExecutor(max_workers=os.cpu_count() * 4 | 4) as ext:
-            futures = []
-            for li in tqdm(vod_list):
-                url = li['url']
-                futures.append(ext.submit(cls.get_vod_data, url))
-            vods = []
-            for future in tqdm(as_completed(futures), total=len(futures)):
-                vods.append(future.result())
-            with open('data/json/guoman.json', 'w', encoding='utf-8') as file:
-                json.dump(vods, file, ensure_ascii=False, indent=2)
+    def update_all(self, after: str = date.today().isoformat()):
+        tag_queue = Queue()
+        for index in range(1, 9+1):
+            tag_queue.put(index)
+        self.scraper(tag_queue, after)
+
+    def update(self, *tags: int, after: str = date.today().isoformat()):
+        tag_queue = Queue()
+        for tag in tags:
+            tag_queue.put(tag)
+        self.scraper(tag_queue, after)
+
+    # TODO: 待完善
+    def fetch_page_worker(
+            self,
+            tag_queue: Queue,
+            page_queue: Queue,
+        ):
+        while not tag_queue.empty():
+            tag = tag_queue.get()
+            try:
+                url = self.root + f"/list{tag}"
+                res = requests.get(url)
+                res.raise_for_status()
+                mat = re.search(r'<a href="/list[0-9]+-([0-9]+)/" title="尾页">尾页</a>', res.text)
+                end_page = int(mat.group(1))   
+                for index in range(1, end_page + 1):
+                    page = self.root + f"/list{tag}-{index}"
+                    page_queue.put((tag, page))
+            except Exception as e:
+                print("tag", tag, e)
+                tag_queue.put(tag)
+    # TODO: 待完善
+    def fetch_url_worker(
+            self,
+            page_queue: Queue,
+            url_queue: Queue,
+            data_stop_event: Event,
+            page_stop_event: Event,
+            stop_tags: set,
+            stop_tags_lock: Lock,
+            after_updated_date: str = '0000-00-00',
+        ):
+        while not page_queue.empty():
+            tag, page = page_queue.get()
+            if tag in stop_tags:
+                continue
+            try:
+                res = requests.get(page, timeout=10, headers={"User-Agent": self.ua.random})
+                res.raise_for_status()
+                vod_list = self._get_vod_list(res.text)
+                for vod in vod_list:
+                    updated = date.isoformat(vod['updated'])
+                    if updated < date.isoformat(after_updated_date):
+                        page_stop_event.set()
+                        with stop_tags_lock:
+                            stop_tags.add(tag)
+                        break
+                    url_queue.put((tag, vod['url']))
+            except Exception as e:
+                print(page, e)
+        data_stop_event.set()
+
+    # TODO: 待完善
+    def fetch_data_worker(
+            self,
+            url_queue: Queue,
+            data_queue: Queue,
+            data_stop_event: Event,
+            write_stop_event: Event
+        ):
+        while True:
+            if url_queue.empty():
+                if data_stop_event.is_set():
+                    break
+                time.sleep(1)
+                continue
+            tag, url = url_queue.get()
+            try:
+                res = requests.get(url, timeout=10, headers={"User-Agent": self.ua.random})
+                res.raise_for_status()
+                data = self._get_vod_data(res.text)
+                data['id'] = re.search(r"\d+", url).group()
+                data['url'] = url
+                data_queue.put((tag, data))
+            except Exception as e:
+                print(url, e)
+        write_stop_event.set()
+    # TODO: 待完善
+    def write_data_worker(
+            self,
+            mongo_client: MongoClient,
+            db_col: tuple[str, int],
+            data_queue: Queue,
+            write_stop_event: Event
+        ):
+        db, col = db_col
+        collection = mongo_client[db][str(col)]
+        while True:
+            if data_queue.empty():
+                if write_stop_event.is_set():
+                    break
+                time.sleep(1)
+                continue
+            tag, data = data_queue.get()
+            if tag != col:
+                data_queue.put(tag, data)
+                continue
+            try:
+                collection.update_one({"id": data['id']}, { "$set": data})
+            except Exception as e:
+                print(data, e)
+
+DLog = Logger(name="modudownloader", filename="DownloadLog.log")
 
 class ModuDownloader:
     # 类级变量
-    max_workers = os.cpu_count() or 8
-    output_dir = Path(__file__).parent
-    m3u8_dir = output_dir.joinpath('m3u8')
-    temp_dir = output_dir.joinpath("_temp")
+    _max_workers = os.cpu_count() or 8
+    _output_dir = Path(__file__).parent
+    _ua = UserAgent()
+    _ua_lock = Lock()
+    _m3u8_queue = Queue()
+    _ts_queue = Queue()
+    _stop_mids = []
+    _stop_mids_lock = Lock()
 
     def __init__(self,
-        max_workers: int | None = ...,
-        output_dir: str | Path | None = ...,
+        max_workers: int | None = None,
+        output_dir: str | None = None,
         ):
+        """
+        任务模式：add_task -> m3u8_queue, do_task => ( m3u8_worker(m3u8_queue) -> ts_worker(ts_queue) )
+        """
         # 实例变量
-        self.max_workers = max_workers if max_workers is not None else self.__class__.max_workers
-        self.output_dir = Path(output_dir) if output_dir is not None else self.__class__.output_dir
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.max_workers = max_workers if max_workers is not None else self.__class__._max_workers
+        self.output_dir = Path(output_dir) if output_dir is not None else self.__class__._output_dir
+        self.ua = UserAgent()
+        self.ua_lock = Lock()
+        self.stop_mids = set()
+        self.stop_mids_lock = Lock()
+        self.m3u8_queue = Queue()
+        self.ts_queue = Queue()
+        self.all_task_stop = Event()
 
-    @staticmethod
-    def download_file(url: str, output: str | Path, retry_times: int = 3):
-        """
-        Return output file's path
-        """
-        if output.exists():
-            return output
-        try:
-            res = requests.get(url, headers={"User-Agent": UserAgent().random}, timeout=5)
-            res.raise_for_status()
-            with open(output, 'wb') as f:
-                f.write(res.content)
-        except Exception as e:
-            return False
-        return output
+    def m3u8_worker(
+            self,
+            m3u8_queue: Queue,
+            ts_queue: Queue,
+            stop_event: Event
+        ):
+        while not m3u8_queue.empty():
+            if self.all_task_stop.is_set():
+                return 
+            mid, url = m3u8_queue.get()
+            os.makedirs(mid, exist_ok=True)
+            try:
+                with self.ua_lock:
+                    user_agent = self.ua.random
+                m3 = m3u8.load(url, timeout=16, headers={"User-Agent": user_agent})
+                m3.dump(f"{mid}/{mid}.m3u8") 
+                for seg in m3.segments:
+                    if mid in seg.absolute_uri:
+                        ts_queue.put((mid, seg.absolute_uri))
+                print("m3u8 worker ok. ID:", mid)
+            except Exception as e:
+                print("m3u8 worker error. ID:", mid)
+                DLog.error(e)
+        stop_event.set()
     
+    def ts_worker(
+            self,
+            ts_queue: Queue,
+            stop_event: Event
+        ):
+        with self.ua_lock:
+            user_agent = self.ua.random
+        while True:
+            if self.all_task_stop.is_set():
+                print("ts worker stop. All task stop event is set")
+                break
+            if ts_queue.empty():
+                if stop_event.is_set():
+                    print("ts worker stop. No task to do.")
+                    break
+                time.sleep(1)
+                continue
+            mid, url = ts_queue.get()
+            with self.stop_mids_lock:
+                if mid in self.stop_mids:
+                    continue
+            output = os.path.join(mid, os.path.basename(url))
+            if os.path.exists(output):
+                print("ts worker ok. Ts file existed:", output)
+                continue
+            try:
+                res = requests.get(url, timeout=16, headers={"User-Agent": user_agent})
+                res.raise_for_status()
+                with open(output, "wb") as f:
+                    f.write(res.content)
+                print("ts worker ok. Url:", url)
+            except Exception as e:
+                print("ts worker error. Url:", url)
+                DLog.error(e)
+
+    def add_task(
+            self,
+            *playlists: str,
+        ):
+        # TODO: 判断任务是否重复，避免重复添加任务
+        mids = []
+        for playlist in playlists:
+            mid = os.path.basename(os.path.dirname(playlist))
+            try:
+                m3 = m3u8.load(playlist, timeout=16)
+                self.m3u8_queue.put((mid, m3.playlists[0].absolute_uri))
+                mids.append(mid)
+            except Exception as e:
+                print("add task error. ID:", mid)
+                DLog.error(e)
+        print("New Tasks:", mids)
+        return mids
+
+    def do_task(
+            self,
+            *playlists: str
+        ):
+        mids = self.add_task(*playlists)
+        for mid in mids:
+            with self.stop_mids_lock:
+                if mid in self.stop_mids:
+                    self.stop_mids.remove(mid)
+        self.all_task_stop.clear()
+        # TODO: 添加终止逻辑
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            stop_event = Event()
+            for _ in range(self.max_workers - 1):
+                executor.submit(self.ts_worker, self.ts_queue, stop_event)
+            executor.submit(self.m3u8_worker, self.m3u8_queue, self.ts_queue, stop_event)
+        print("do task done.")
+
+    def stop_task(
+            self,
+            *mids: str
+        ):
+        for mid in mids:
+            with self.stop_mids_lock:
+                self.stop_mids.add(mid)
+
+    def stop_all_task(self):
+        self.all_task_stop.set()
+        print("all task stop event is set.")
+    
+    def start_all_task(self):
+        with self.stop_mids_lock:
+            self.stop_mids.clear()
+        self.all_task_stop.clear()
+        print("start all task.")
+
+    # TODO
     @staticmethod
     def merge_files(*files: str, output: str):
         with open(output, 'wb') as f1:
@@ -338,131 +563,32 @@ class ModuDownloader:
                 return f"{size:.2f}{x}"
             size = size / 1024
         return f"{size}TB"
-
-    def load_m3u8(self, url: str):
-        m3u8_obj = m3u8.load(url, timeout=5, headers={"User-Agent": UserAgent().random})
-        filename = Path(url).parent.name
-        if m3u8_obj.is_variant:
-            m3u8_obj = m3u8.load(m3u8_obj.playlists[0].absolute_uri, timeout=5)
-        output = self.m3u8_dir.joinpath(filename + ".m3u8")
-        m3u8_obj.dump(output)
-        return modify_m3u8_file(str(output), url)
-    
-    @classmethod
-    def load_m3u8(cls, url: str):
-        m3u8_obj = m3u8.load(url, timeout=5, headers={"User-Agent": UserAgent().random})
-        filename = Path(url).parent.name
-        if m3u8_obj.is_variant:
-            m3u8_obj = m3u8.load(m3u8_obj.playlists[0].absolute_uri, timeout=5)
-        output = cls.m3u8_dir.joinpath(filename + ".m3u8")
-        m3u8_obj.dump(output)
-        return modify_m3u8_file(str(output), url)
-    
-    # TODO: eq load_m3u8()
-    @staticmethod
-    def download_m3u8(url: str, output: Path, fid: str | None = None):
-        m3 = m3u8.load(url)
-        base_uri = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
-        if m3.is_variant:
-            m3 = m3u8.load(m3.playlists[0].absolute_uri)
-        segments_to_remove = []
-        for seg in m3.segments:
-            uri = seg.absolute_uri or seg.uri
-            if uri.startswith("/"):
-                seg.uri = base_uri + uri
-            if uri.endswith(".jpg"):
-                seg.uri = uri.replace(".jpg", ".ts")
-            if fid and fid not in uri:
-                segments_to_remove.append(seg)
-        for seg in segments_to_remove:
-            m3.segments.remove(seg)
-        m3.dump(output)
-        return output
-    
-    @classmethod
-    def download_all_m3u8(cls):
-        with open('data/json/manga.json', encoding='utf-8') as file:
-            vod_data = json.load(file)
-        with ThreadPoolExecutor(max_workers=32) as ext:
-            futures = []
-            urls = []
-            for vod in tqdm(vod_data):
-                playlists = vod['playlists']
-                for playlist in playlists:
-                    urls.append(re.sub(r"第\d+集\$", "" ,playlist))
-            for url in tqdm(urls):
-                try:
-                    filename = os.path.dirname(url) + ".m3u8"
-                    output = Path(__file__).parent.joinpath("m3u8", filename)
-                    if output.exists():
-                        continue
-                    futures.append(ext.submit(cls.download_m3u8, url, output))
-                except Exception as e:
-                    print(url, e)
-                    continue
-            for future in tqdm(as_completed(futures), total=len(futures)):
-                result = future.result()
-
-    def download_all_segments(self, m3u8_file: str):
-        m3u8_obj = m3u8.load(m3u8_file)
-        id, extension = os.path.splitext(Path(m3u8_file).name)[0]
-        downloaded_segments = []
-        with ThreadPoolExecutor(max_workers=self.max_workers) as ext:
-            futures = []
-            for index, seg in enumerate(m3u8_obj.segments):
-                url = seg.uri
-                output = self.temp_dir.joinpath(id, f"{index:4d}{id}{extension}")
-                futures.append(ext.submit(self.download_file, url, output))
-            for future in tqdm(as_completed(futures), total=len(futures)):
-                res = future.result()
-                if res:
-                    downloaded_segments.append(res)
-        return sorted(downloaded_segments)
-    
-    @classmethod
-    def download_all_segments(cls,
-            m3u8_file: str | Path,
-            max_workers: int | None = None
-        ) -> list[str] | list[Path]:
-        # TODO: 
-        m3u8_obj = m3u8.load(m3u8_file.as_uri())
-        id = os.path.splitext(Path(m3u8_file).name)[0]
-        downloaded_segments = []
-        while True:
-            downloaded_segments = []
-            with ThreadPoolExecutor(max_workers=max_workers or cls.max_workers) as ext:
-                futures = []
-                for index, seg in enumerate(m3u8_obj.segments):
-                    url = seg.uri
-                    cls.temp_dir.joinpath(id).mkdir(parents=True, exist_ok=True)
-                    output = cls.temp_dir.joinpath(id, f"{index:04d}{id}.ts")
-                    if os.path.exists(output):
-                        downloaded_segments.append(output)
-                        continue
-                    futures.append(ext.submit(cls.download_file, url, output))
-                for future in tqdm(as_completed(futures), total=len(futures)):
-                    res = future.result()
-                    if res:
-                        downloaded_segments.append(res)
-            if len(downloaded_segments) == len(m3u8_obj.segments):
-                break
-
-        return sorted(downloaded_segments)
-    
-    @classmethod
-    def download(cls, url: str, max_workers: int | None = None, output: str | Path = ...):
-        id = Path(url).parent.name
-        print(id)
-        m3u8_file = cls.load_m3u8(url)
-        ts_files = cls.download_all_segments(m3u8_file, max_workers)
-        if output == Ellipsis:
-            print(cls.merge_files(*ts_files, output=cls.output_dir.joinpath("video", f"{id}.ts")))
-        else:
-            print(cls.merge_files(*ts_files, output=output))
-        return shutil.rmtree(cls.temp_dir.joinpath(id))
     
 if __name__ == '__main__':
 
-    ModuScraper.update(tag="2", after='2025-06-08')
+    def input_listener():
+        while True:
+            cmd = input(">>> ")
+            if cmd == "exit()":
+                break
+            exec(cmd)
+    input_thread = Thread(
+        target=input_listener, daemon=True
+    )
+    input_thread.start()
 
-    pass
+    md = ModuDownloader()
+    md.do_task(
+        "https://play.modujx11.com/20250523/vSvLIoFA/index.m3u8",
+        "https://play.modujx11.com/20250523/G0fGeFe2/index.m3u8",
+        "https://play.modujx11.com/20250530/U5SSkdIG/index.m3u8",
+        "https://play.modujx11.com/20250606/sL3KRYlo/index.m3u8",
+        "https://play.modujx11.com/20250613/t1NlEk4n/index.m3u8",
+        "https://play.modujx11.com/20250620/xUBbfNgW/index.m3u8",
+        "https://play.modujx11.com/20250627/pYDNghZw/index.m3u8",
+        "https://play.modujx11.com/20250704/GGUAlW2o/index.m3u8",
+        "https://play.modujx11.com/20250711/XK5XCgdN/index.m3u8",
+        "https://play.modujx11.com/20250718/Vj5fF8Fp/index.m3u8",
+    )
+
+    

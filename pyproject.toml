@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moduso"
+version = "1.0.0"
+authors = [
+    {name = "Lnaqis", email = "lnaqis@outlook.com"},
+]
+description = ""
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.25.1",
+    "ddddocr==1.0.6",
+    "fake-useragent==2.0.3",
+    "beautifulsoup4==4.13.3",
+    "m3u8==6.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/lane712/modu"

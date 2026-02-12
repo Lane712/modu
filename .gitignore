@@ -1,28 +1,20 @@
+# Created by venv; see https://docs.python.org/3/library/venv.html
 
-modu/__pycache__/
+*.pyc
+*.log
+*.m3u8
+*.ts
 
-__pycache__
+.vscode
 
+Include/
+Lib/
 res/
-
-data/m3u8/
-
-data/_m3u8/
-
-data/temp/
-
-data/shotcut/
-
-data/ts/
-
-modu/video/
-
-modu/m3u8/
+Scripts/
+tests/
+data/
 
 modu/_temp/
-
-*.log
-
-*.m3u8
-
-*.ts
+modu/m3u8/
+modu/video/
+modu/_pycache__/

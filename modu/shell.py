@@ -1,5 +1,5 @@
 import argparse
-from modu.main import ModuDownloader
+from modu.main import ModuDownloader,ModuScraper
 from datetime import date
 
 if __name__ == '__main__':

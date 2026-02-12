@@ -3,8 +3,10 @@ import os,re
 from tkinter import *
 from tkinter import font as tkfont
 from tkinter import ttk
+
 import asyncio
 import threading
+
 from modu.main import ModuDownloader
 
 class ModuApp():
@@ -14,7 +16,6 @@ class ModuApp():
         self.root.title("ModuApp")
 
         self.download_thread = threading.Thread()
-        self.download_loop = asyncio.new_event_loop()
         self.download_future = None
 
         self.font_var = StringVar(value="黑体")
@@ -29,7 +30,7 @@ class ModuApp():
 
         self.create_widgets()
 
-        #TODO bug: 子组件也会触发
+        # 子组件也会触发
         self.root.bind("<Configure>", self.window_on_resize)
 
     def run(self):
@@ -37,15 +38,16 @@ class ModuApp():
         self.root.mainloop()
 
     def window_on_resize(self, event: Event):
-        if event.widget == self.root:
-            print(f'root | {event.width} x {event.height}')
-        if event.widget == self.content_frame:
-            print(f'content | {event.width} x {event.height}')
-        if event.widget == self.search_input_frame:
-            print(f'search input | {event.widget} x {event.height}')
-        if event.widget == self.search_results_frame:
-            self.search_results_canvas.config(width=event.width)
-            print(f'search results | {event.width} x {event.height}')
+        pass
+        # if event.widget == self.root:
+        #     print(f'root | {event.width} x {event.height}')
+        # if event.widget == self.content_frame:
+        #     print(f'content | {event.width} x {event.height}')
+        # if event.widget == self.search_input_frame:
+        #     print(f'search input | {event.widget} x {event.height}')
+        # if event.widget == self.search_results_frame:
+        #     self.search_results_canvas.config(width=event.width)
+        #     print(f'search results | {event.width} x {event.height}')
 
     def create_widgets(self):
         self.center_window()
@@ -53,18 +55,18 @@ class ModuApp():
 
         # 菜单栏
         self.navigation_frame = ttk.Frame(self.root)
-        self.navigation_frame.grid(row=0, sticky=NW, pady=8)
+        self.navigation_frame.grid(row=0, sticky=NW)
         self.create_navgation()
 
         # 主内容
         self.content_frame = ttk.Frame(self.root)
-        self.content_frame.grid(row=1, sticky=NSEW, pady=8)
+        self.content_frame.grid(row=1, sticky=NSEW)
         self.create_content()
 
     def center_window(self):
         # 设置窗口大小和位置
-        window_width = 1080
-        window_height = 640
+        window_width = 640
+        window_height = 480
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         x = (screen_width - window_width) // 2
@@ -72,10 +74,10 @@ class ModuApp():
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
 
     def create_navgation(self):
-        ttk.Button(
+        ttk.Menubutton(
             self.navigation_frame,
-            text = "file"
-        ).grid(row=1, column=0, padx=16)
+            text="文件"
+        ).grid(row=1, column=0)
 
         # ttk.Label(
         #     self.navigation_frame,
@@ -109,9 +111,6 @@ class ModuApp():
 
         ## 设置下拉菜单
         config_menu = Menu(self.navigation_frame, tearoff=False)
-        # config_menu.add_command(label="command") # 命令项
-        # config_menu.add_checkbutton(label="checkbutton") # 单选按钮
-        # config_menu.add_separator() # 分割线
         
         # 字体
         config_menu_font_menu = Menu(self.navigation_frame, tearoff=False)
@@ -128,7 +127,7 @@ class ModuApp():
 
         # 下载线程数
         config_menu_thread_menu = Menu(self.navigation_frame, tearoff=False)
-        for index in range(2, 17, 2):
+        for index in [1,2,4,8,16,32,64]:
             config_menu_thread_menu.add_radiobutton(
                 label=str(index),
                 value=index,
@@ -142,15 +141,15 @@ class ModuApp():
             menu=config_menu
         ).grid(row=1, column=3)    
 
+
         ttk.Label(
             self.navigation_frame,
             text="下载线程数"
         ).grid(row=1, column=4)
-
         ttk.OptionMenu(
             self.navigation_frame,
             self.download_thread_var,
-            *[2,4,8,16]
+            *[1,2,4,8,16,32,64]
         ).grid(row=1, column=5)
 
         # ttk.Label(
@@ -173,37 +172,32 @@ class ModuApp():
         # )
 
     def create_content(self):
+        self.content_frame.configure(
+            border=1, borderwidth=1
+        )
 
         # 搜索框
         self.search_input_frame = ttk.Frame(self.content_frame)
-        self.search_input_frame.grid(row=1, padx=16, pady=8)
+        self.search_input_frame.grid(row=1)
         self.search_input()
 
         # 搜索结果
         self.search_results_canvas = Canvas(self.content_frame)
-        self.search_results_canvas.config(
-            yscrollcommand=None
-        )
+        self.search_results_canvas.configure(yscrollcommand=None)
         self.search_results_frame = ttk.Frame(self.search_results_canvas)
-        self.search_results_frame.config(
-            border=1,
-            borderwidth=1,
-            padding=8
-        )
 
-        self.content_frame.rowconfigure(2, weight=1)
-        self.search_results_canvas.grid(row=2, sticky=NSEW, padx=16, pady=8)
+        self.search_results_canvas.grid(row=2, sticky=NSEW)
         self.search_results_canvas.create_window((0, 0), window=self.search_results_frame, anchor="nw")
 
         # 更新滚动区域
         self.search_results_frame.bind(
             "<Configure>",
-            lambda e: (self.search_results_canvas.config(scrollregion=self.search_results_canvas.bbox("all")))
+            lambda e: (self.search_results_canvas.configure(scrollregion=self.search_results_canvas.bbox("all")))
         )
         # 绑定滚动事件（TODO: 替换bind_all）
         self.search_results_canvas.bind(
             "<Enter>",
-            lambda e1: (self.search_results_canvas.bind_all(
+            lambda e1: (print("<Enter> search_results_canvas", e1.widget), self.search_results_canvas.bind_all(
                 "<MouseWheel>",
                 lambda e2: (self.search_results_canvas.yview_scroll(int(-1 * (e2.delta / 120)), "units"))   
             ))
@@ -211,53 +205,53 @@ class ModuApp():
         # 解绑滚动事件（待优化）
         self.search_results_canvas.bind(
             "<Leave>",
-            lambda e: self.search_results_canvas.unbind_all("<MouseWheel>")
+            lambda e: (print("<Leave> search_results_canvas", e.widget), self.search_results_canvas.unbind_all("<MouseWheel>"))
         )
 
     def search_input(self):
 
-        self.search_input_frame.rowconfigure(0, weight=1)
+        self.search_input_frame.grid_rowconfigure(0, weight=1)
         self.search_input_frame.columnconfigure([0,1], weight=1)
 
         ttk.Entry(
             self.search_input_frame,
             textvariable=self.search_var
-        ).grid(row=1, column=0, sticky=NSEW, padx=(10,0))
+        ).grid(row=1, column=0, sticky=E)
 
         ttk.Button(
             self.search_input_frame,
             text="搜索",
             command=self.search
-        ).grid(row=1, column=1, sticky=NSEW, padx=(0,10))
+        ).grid(row=1, column=1, sticky=E)
 
     def search_result(self, result, index):
 
         search_result_frame = ttk.Frame(self.search_results_frame)
-        
         search_result_frame.config(
             border=1, 
             borderwidth=1,
             relief="solid",
-            padding=(16, 8)
         )
-
         self.search_results_frame.rowconfigure(index, weight=1)
         self.search_results_frame.columnconfigure(0, weight=1)
-        search_result_frame.grid(row=index, pady=4)
+        search_result_frame.grid(row=index)
         search_result_frame.columnconfigure([0,1,2,3], weight=1)
+        search_result_frame.rowconfigure([0,1,2,3,4], weight=1)
         
-        for playlist in result["playlists"]:
-            index = int(re.search(r'第(\d+)集', playlist).group(1))
-            url = re.search(r'https?://.+', playlist).group()
-            r = (index - 1) // 4 + 1
-            l = (index - 1) % 4
+        for index, playlist in enumerate(result["playlists"]):
+            name, url = playlist.split("$")
+            pat = re.search(r'第(\d+)集', name)
+            if pat:
+                name = pat.group(1)
+            r = index // 4 + 1
+            l = index % 4
             ttk.Button(
-                search_result_frame, text=index, command=lambda url=url: self.start_download_thread(url)
+                search_result_frame, text=name, command=lambda url=url: self.start_download_thread(url)
                 ).grid(row=r, column=l)
         
         ttk.Label(
             search_result_frame, text=result["title"], justify="left", font=(self.font_var.get(), 12, "bold")
-            ).grid(row=0, column=0, columnspan=4, sticky=NSEW, pady=4)
+            ).grid(row=0, column=0, columnspan=4, sticky=NSEW)
 
     def search(self):
 
@@ -344,6 +338,55 @@ class ModuApp():
                 "第11集$https://play.modujx10.com/20231003/2NbeC75f/index.m3u8"
             ]
           },
+          {
+            "id": "59925",
+            "actors": [
+              "王俊凯",
+              "刘校妤",
+              "周深",
+              "黄渤",
+              "贾冰",
+              "马东",
+              "金靖",
+              "周铁男",
+              "闫佩伦",
+              "张小婉",
+              "刘旸",
+              "罗圣灯",
+              "宣晓鸣",
+              "曹雪",
+              "彭恩熠",
+              "良生",
+              "何梓骞"
+            ],
+            "aired": 2025,
+            "directors": [
+              "于奥",
+              "周铁男"
+            ],
+            "genres": [
+              "爱情",
+              "动画",
+              "奇幻",
+              "冒险"
+            ],
+            "imgsrc": "https://tu.modututu.com/upload/vod/20250724-1/d362d63fb371e5475ca205110244bb48.jpg",
+            "playlists": [
+              "正片$https://play.modujx11.com/20250724/mYtfn2jd/index.m3u8"
+            ],
+            "region": "中国大陆",
+            "status": "正片",
+            "title": "时间之子",
+            "titles": [
+              "Endless",
+              "Journey",
+              "of",
+              "Love",
+              "时间之子"
+            ],
+            "updated": "2025-07-24",
+            "url": "https://www.moduzy.cc/vod/59925/"
+            }
         ]
 
         for widget in self.search_results_frame.winfo_children():
@@ -354,11 +397,15 @@ class ModuApp():
         for index, result in enumerate(results):
             self.search_result(result, index)
 
-    def start_download_thread(self, url):
+    def download_loop(self):
+        self.downloader = ModuDownloader()
+        while True:
+            pass
 
+    def start_download_thread(self):
         if self.download_thread.is_alive():
             return
-        self.download_thread = threading.Thread(target=ModuDownloader.download, args=(url, self.download_thread_var.get()), daemon=True)
+        self.download_thread = threading.Thread(target=self.download_loop, daemon=True)
         self.download_thread.start()
 
 if __name__ == "__main__":
